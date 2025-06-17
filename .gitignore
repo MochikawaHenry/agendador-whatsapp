@@ -1,0 +1,11 @@
+# Dependências que podem ser reinstaladas
+node_modules/
+
+# Arquivos de ambiente e tokens com segredos
+.env
+token.json
+credentials.json
+
+# Arquivos de log e do sistema operacional
+npm-debug.log*
+.DS_Store
