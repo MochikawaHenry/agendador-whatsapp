@@ -1,4 +1,4 @@
-// googleCalendar.js - VERSÃO COM GESTÃO DE DIÁLOGO, MEMÓRIA E DB INTEGRADO
+// googleCalendar.js - VERSÃO COM GESTÃO DE DIÁLOGO, MEMÓRIA E DB INTEGRADO (incluindo salvar contato)
 const fs = require('fs').promises;
 const path = require('path');
 const { google } = require('googleapis');
@@ -81,13 +81,17 @@ async function processMessage(message, from) { // 'from' é o número do usuári
 
     // O PROMPT para o Gemini - INSTRUÇÕES CLARAS PARA EXTRAÇÃO E INTENÇÃO
     const prompt = `
-        Você é um assistente de agendamento de reuniões. Sua tarefa é extrair os detalhes para um agendamento.
+        Você é um assistente de agendamento e gerenciamento de contatos. Sua tarefa é extrair os detalhes da mensagem do usuário.
         A data de hoje é ${today}.
 
         Responda APENAS com um objeto JSON válido.
-        O JSON deve ter um campo "intent" e, se a intenção for "agendar_reuniao", deve ter um campo "details" com as informações extraídas.
-        Se a mensagem for uma saudação simples, a intenção deve ser "saudacao".
-        Se a mensagem não for sobre agendamento nem saudação, a intenção deve ser "nao_relacionado".
+        O JSON deve ter um campo "intent" e, se aplicável, um campo "details" com as informações extraídas.
+
+        As intenções possíveis são:
+        - "agendar_reuniao": Para criar eventos no calendário.
+        - "salvar_contato": Para adicionar ou atualizar um nome e email na lista de contatos.
+        - "saudacao": Para cumprimentos simples.
+        - "nao_relacionado": Para qualquer outra mensagem que não se encaixe nas categorias acima.
 
         Para a intenção "agendar_reuniao", extraia os seguintes detalhes no campo "details":
         - "title": Título da reunião (ex: "Reunião de Projeto"). Se não especificado, use "Reunião".
@@ -96,7 +100,13 @@ async function processMessage(message, from) { // 'from' é o número do usuári
         - "duration": Duração em minutos (número inteiro, padrão 60 se não especificado).
         - "guests": Array de nomes ou emails dos convidados (ex: ["João", "maria@email.com"]). Mantenha o que o usuário disser.
 
+        Para a intenção "salvar_contato", extraia os seguintes detalhes no campo "details":
+        - "name": Nome do contato (ex: "Vini").
+        - "email": Email do contato (ex: "vinicius.lucio@polijunior.com.br").
+
         ${existingContext}
+
+        --- Exemplos ---
 
         Exemplo de saudação:
         Mensagem do usuário: "Olá!"
@@ -116,7 +126,11 @@ async function processMessage(message, from) { // 'from' é o número do usuári
         Usuário 1: "será dia 20 de junho as 15h com o pino e o digão"
         JSON de Resposta (considerando o contexto anterior): {"intent": "agendar_reuniao", "details": {"title": "Reunião de vendas", "date": "2025-06-20", "time": "15:00", "duration": 60, "guests": ["pino", "digão"]}}
 
-        Exemplo não relacionado:
+        Exemplo de salvar contato:
+        Mensagem do usuário: "salvar o contato do Vini como vinicius.lucio@polijunior.com.br"
+        JSON de Resposta: {"intent": "salvar_contato", "details": {"name": "Vini", "email": "vinicius.lucio@polijunior.com.br"}}
+
+        Exemplo de não relacionado:
         Mensagem do usuário: "qual a temperatura em São Paulo?"
         JSON de Resposta: {"intent": "nao_relacionado"}
 
@@ -141,77 +155,97 @@ async function processMessage(message, from) { // 'from' é o número do usuári
             return "❌ Ops, tive um problema interno ao entender sua solicitação (formato JSON inválido). Por favor, tente novamente.";
         }
 
-        // --- Lógica de Gestão de Diálogo e Resolução de Convidados ---
-        if (aiResponse.intent === 'agendar_reuniao' && aiResponse.details) {
-            let currentDetails = conversationStates[from] || {};
-            currentDetails = { ...currentDetails, ...aiResponse.details }; // Mescla com o rascunho existente
+        // --- Lógica de Gestão de Diálogo e Resolução de Convidados/Contatos ---
+        switch (aiResponse.intent) {
+            case 'agendar_reuniao':
+                let currentDetails = conversationStates[from] || {};
+                currentDetails = { ...currentDetails, ...aiResponse.details }; // Mescla com o rascunho existente
 
-            // Validação e Resolução dos convidados (nomes para emails do DB)
-            const resolvedGuests = [];
-            if (currentDetails.guests && currentDetails.guests.length > 0) {
-                for (const guest of currentDetails.guests) {
-                    let email = null;
-                    if (guest.includes('@')) { // Se já é um email, usa diretamente
-                        email = guest;
-                        // Opcional: Adicionar ao banco para aprendizado futuro se quiser
-                        // await addContact(guest.split('@')[0], guest); 
-                    } else { // Tenta buscar pelo nome no banco de dados
-                        const dbEmail = await getEmailByName(guest);
-                        if (dbEmail) {
-                            email = dbEmail;
+                // Validação e Resolução dos convidados (nomes para emails do DB)
+                const resolvedGuests = [];
+                if (currentDetails.guests && currentDetails.guests.length > 0) {
+                    for (const guest of currentDetails.guests) {
+                        let email = null;
+                        if (guest.includes('@')) { // Se já é um email, usa diretamente
+                            email = guest;
+                        } else { // Tenta buscar pelo nome no banco de dados
+                            const dbEmail = await getEmailByName(guest);
+                            if (dbEmail) {
+                                email = dbEmail;
+                            }
+                        }
+                        if (email) {
+                            resolvedGuests.push(email);
+                        } else {
+                            console.warn(`Convidado '${guest}' não resolvido para um email válido e será ignorado.`);
+                            // Você pode adicionar uma lógica para perguntar o email ou sugerir salvar o contato
                         }
                     }
-                    if (email) {
-                        resolvedGuests.push(email);
-                    } else {
-                        console.warn(`Convidado '${guest}' não resolvido para um email válido e será ignorado.`);
-                        // Poderíamos adicionar aqui uma lógica para perguntar o email do convidado
-                    }
                 }
-            }
-            currentDetails.guests = resolvedGuests; // Atualiza com os emails resolvidos
+                currentDetails.guests = resolvedGuests; // Atualiza com os emails resolvidos
 
-            // Verifica se todas as informações necessárias estão presentes
-            const missingFields = [];
-            if (!currentDetails.title) missingFields.push('título');
-            if (!currentDetails.date) missingFields.push('data');
-            if (!currentDetails.time) missingFields.push('hora');
-            // Se guests for obrigatório, adicione a validação:
-            if (!currentDetails.guests || currentDetails.guests.length === 0) {
-                 missingFields.push('convidados');
-            }
+                // Verifica se todas as informações necessárias estão presentes
+                const missingFields = [];
+                if (!currentDetails.title) missingFields.push('título');
+                if (!currentDetails.date) missingFields.push('data');
+                if (!currentDetails.time) missingFields.push('hora');
+                if (!currentDetails.guests || currentDetails.guests.length === 0) {
+                     missingFields.push('convidados');
+                }
 
-            if (missingFields.length > 0) {
-                conversationStates[from] = currentDetails; // Salva o rascunho na memória
-                return `Entendido! Para agendar, preciso que me informe o(s) seguinte(s) dado(s): ${missingFields.join(', ')}.`;
-            } else {
-                // Se temos tudo, agenda a reunião e limpa a memória
-                delete conversationStates[from];
-                const auth = await authorize();
-                return await createCalendarEvent(auth, currentDetails);
-            }
-        } else if (aiResponse.intent === 'saudacao') {
-            // Limpa qualquer rascunho anterior ao iniciar uma saudação
-            delete conversationStates[from]; 
-            return "Olá! Sou seu assistente de agendamento. Como posso ajudar?";
-        } else if (aiResponse.intent === 'nao_relacionado') {
-            // Limpa qualquer rascunho se a conversa for para outro assunto
-            delete conversationStates[from]; 
-            return "Desculpe, sou um bot focado em agendamentos. Não consigo ajudar com isso. Posso marcar uma reunião para você?";
-        } else {
-            // Se a IA não reconheceu a intenção ou não retornou detalhes válidos para agendamento
-            return "Não entendi muito bem o que você quis dizer ou não consegui extrair informações de agendamento. Por favor, tente reformular sua solicitação.";
+                if (missingFields.length > 0) {
+                    conversationStates[from] = currentDetails; // Salva o rascunho na memória
+                    return `Entendido! Para agendar, preciso que me informe o(s) seguinte(s) dado(s): ${missingFields.join(', ')}.`;
+                } else {
+                    // Se temos tudo, agenda a reunião e limpa a memória
+                    delete conversationStates[from];
+                    const auth = await authorize();
+                    return await createCalendarEvent(auth, currentDetails);
+                }
+            
+            case 'salvar_contato': // NOVO CASE AQUI!
+                const contactDetails = aiResponse.details;
+                if (contactDetails && contactDetails.name && contactDetails.email) {
+                    try {
+                        await addContact(contactDetails.name, contactDetails.email); // Chama a função do seu db.js
+                        delete conversationStates[from]; // Limpa o estado da conversa após salvar
+                        return `✅ Contato "${contactDetails.name}" (${contactDetails.email}) salvo com sucesso!`;
+                    } catch (dbError) {
+                        console.error("Erro ao salvar contato no DB:", dbError);
+                        // Verifica se é erro de duplicidade e dá uma mensagem mais amigável
+                        if (dbError.message && dbError.message.includes('duplicate key value violates unique constraint')) {
+                            return `❗ O nome ou email "${contactDetails.name}" já existe. Contato atualizado com o novo email.`;
+                        }
+                        return `❌ Ops! Não consegui salvar o contato. Detalhe: ${dbError.message}`;
+                    }
+                } else {
+                    return "Entendi que você quer salvar um contato, mas preciso do nome e do email. Por favor, me diga em um formato claro, como 'salvar contato [Nome] como [email@dominio.com]'.";
+                }
+            
+            case 'saudacao':
+                delete conversationStates[from]; 
+                return "Olá! Sou seu assistente de agendamento e contatos. Como posso ajudar?";
+
+            case 'nao_relacionado':
+                delete conversationStates[from]; 
+                return "Desculpe, sou um bot focado em agendamentos e contatos. Não consigo ajudar com isso. Posso marcar uma reunião ou salvar um contato para você?";
+                
+            default:
+                return "Não entendi muito bem o que você quis dizer ou não consegui extrair informações válidas. Por favor, tente reformular sua solicitação.";
         }
 
     } catch (e) {
         console.error("Erro no processamento principal da IA ou do fluxo:", e);
+        // Verificar se o erro foi por falta da GEMINI_API_KEY
+        if (e.message && e.message.includes('API key not found')) {
+            return "❌ Ops! Minha inteligência artificial não está funcionando. Por favor, verifique se a GEMINI_API_KEY está configurada corretamente.";
+        }
         return "Estou com um pouco de dificuldade para processar os pedidos agora. Tente novamente em um instante.";
     }
 }
 
 // --- EXPORTAÇÕES E CONEXÃO INICIAL DO BANCO DE DADOS ---
-// Exporta as funções necessárias para serem usadas pelo index.js e outros scripts
-module.exports = { processMessage, authorize }; // Mantenha authorize para o get-token.js
+module.exports = { processMessage, authorize };
 
 // Conecta ao banco de dados quando este módulo é carregado (ao iniciar o index.js)
 // IMPORTANTE: Isso cria a tabela 'contacts' se ela não existir.
