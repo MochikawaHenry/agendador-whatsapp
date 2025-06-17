@@ -9,11 +9,12 @@ app.use(express.urlencoded({ extended: false }));
 
 app.post('/whatsapp', async (req, res) => {
     const incomingMsg = req.body.Body;
-    const from = req.body.From;
+    const from = req.body.From; // Captura o número do remetente
 
     console.log(`Mensagem recebida de ${from}: ${incomingMsg}`);
 
-    const replyMessage = await processMessage(incomingMsg);
+    // PASSANDO O NÚMERO DO REMETENTE PARA processMessage
+    const replyMessage = await processMessage(incomingMsg, from);
 
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
     await client.messages.create({
