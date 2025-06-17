@@ -1,4 +1,4 @@
-// googleCalendar.js - VERSÃO FINAL COMPLETA COM IA E CONTEXTO
+// googleCalendar.js - VERSÃO FINAL COMPLETA COM IA E RECONHECIMENTO DE INTENÇÃO
 const fs = require('fs').promises;
 const path = require('path');
 const { google } = require('googleapis');
@@ -72,7 +72,6 @@ async function createCalendarEvent(auth, details) {
 async function processMessage(message) {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash"});
     
-    // "Memória" - Definimos la lista de contatos do seu núcleo
     const contacts = {
         "lucas": "lucas.siomi@polijunior.com.br",
         "allan": "allan.doval@polijunior.com.br",
@@ -92,18 +91,28 @@ async function processMessage(message) {
 
     const today = new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-    // Melhorar o Prompt com a lista de contatos
     const prompt = `
-        Sua tarefa é extrair dados de agendamento de uma mensagem. A data de hoje é ${today}.
+        Sua tarefa é atuar como um assistente de agendamento inteligente.
+        Primeiro, identifique a intenção principal da mensagem do usuário. As intenções possíveis são: "agendar_reuniao", "saudacao", ou "nao_relacionado".
 
-        Você tem acesso à seguinte lista de contatos (nome/apelido: email):
-        ${JSON.stringify(contacts, null, 2)}
+        Se a intenção for "agendar_reuniao", extraia os seguintes detalhes: title, date (AAAA-MM-DD), time (HH:MM), duration (em minutos, padrão 60), e guests (usando a lista de contatos para resolver nomes para emails).
+        
+        A data de hoje é ${today}.
+        A lista de contatos é: ${JSON.stringify(contacts, null, 2)}.
 
-        Se a mensagem do usuário mencionar um nome ou apelido da lista (ex: 'vini', 'gonça'), use o email correspondente da lista para o campo "guests". Se um email completo já for fornecido, use o email diretamente.
+        Responda APENAS com um objeto JSON válido. O JSON deve ter um campo "intent" e, se a intenção for "agendar_reuniao", deve ter também um campo "details" com as informações extraídas.
 
-        Analise a mensagem do usuário e extraia: um título (title), a data no formato AAAA-MM-DD (date), a hora no formato HH:MM (time), uma duração em minutos (duration), e uma lista de e-mails de convidados (guests).
-        A duração padrão, se não mencionada, é 60 minutos.
-        Responda APENAS com um objeto JSON válido. Se informações essenciais não forem encontradas, retorne um JSON com um campo "error".
+        Exemplo 1:
+        Mensagem do usuário: "bom dia!"
+        JSON de Resposta: {"intent": "saudacao"}
+
+        Exemplo 2:
+        Mensagem do usuário: "vamos marcar um papo com o vini amanhã às 10h30 por 15 minutos sobre o projeto"
+        JSON de Resposta: {"intent": "agendar_reuniao", "details": {"title": "Papo sobre o projeto", "date": "2025-06-18", "time": "10:30", "duration": 15, "guests": ["vinicius.lucio@polijunior.com.br"]}}
+
+        Exemplo 3:
+        Mensagem do usuário: "qual a previsão do tempo?"
+        JSON de Resposta: {"intent": "nao_relacionado"}
 
         Mensagem do usuário: "${message}"
 
@@ -114,25 +123,32 @@ async function processMessage(message) {
         const result = await model.generateContent(prompt);
         const responseText = result.response.text();
         const jsonString = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const details = JSON.parse(jsonString);
+        const aiResponse = JSON.parse(jsonString);
 
-        if (details.error) {
-            return details.error;
-        }
+        switch (aiResponse.intent) {
+            case 'agendar_reuniao':
+                const details = aiResponse.details;
+                if (!details || !details.title || !details.date || !details.time || !details.guests || details.guests.length === 0) {
+                    return "Entendi que você quer agendar, mas preciso de mais detalhes. Por favor, me diga o título, data, hora e os convidados.";
+                }
+                const auth = await authorize();
+                return await createCalendarEvent(auth, details);
 
-        if (!details.title || !details.date || !details.time || !details.guests || details.guests.length === 0) {
-            return "Não consegui entender todos os detalhes. Preciso de um título, data, hora e pelo menos um convidado (seja o nome ou o email).";
+            case 'saudacao':
+                return "Olá! Sou seu assistente de agendamento. Como posso ajudar?";
+
+            case 'nao_relacionado':
+                return "Desculpe, sou um bot focado em agendamentos. Não consigo ajudar com isso. Posso marcar uma reunião para você?";
+                
+            default:
+                return "Não entendi muito bem o que você quis dizer. Pode tentar de novo?";
         }
-        
-        const auth = await authorize();
-        return await createCalendarEvent(auth, details);
 
     } catch (e) {
-        console.error("Erro ao processar resposta da IA ou agendar:", e);
-        return "Tive um problema para entender seu pedido. Pode reformular, por favor?";
+        console.error("Erro no processamento da IA:", e);
+        return "Estou com um pouco de dificuldade para processar os pedidos agora. Tente novamente em um instante.";
     }
 }
 
-
-// Exporta as funções necessárias para outros arquivos
+// Exporta as funções necessárias
 module.exports = { processMessage, authorize };
