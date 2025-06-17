@@ -1,4 +1,4 @@
-// googleCalendar.js - VERSÃO FINAL COMPLETA COM IA
+// googleCalendar.js - VERSÃO FINAL COMPLETA COM IA E CONTEXTO
 const fs = require('fs').promises;
 const path = require('path');
 const { google } = require('googleapis');
@@ -41,7 +41,7 @@ async function createCalendarEvent(auth, details) {
     
     const event = {
         summary: details.title,
-        description: `Reunião agendada via WhatsApp. Convidado(s): ${details.guests.join(', ')}`,
+        description: `Reunião agendada via WhatsApp. Convidado(s): ${(details.guests || []).join(', ')}`,
         start: {
             dateTime: `${details.date}T${details.time}:00-03:00`,
             timeZone: 'America/Sao_Paulo',
@@ -50,7 +50,7 @@ async function createCalendarEvent(auth, details) {
             dateTime: new Date(new Date(`${details.date}T${details.time}:00-03:00`).getTime() + (details.duration || 60) * 60 * 1000).toISOString(),
             timeZone: 'America/Sao_Paulo',
         },
-        attendees: details.guests.map(email => ({ email })),
+        attendees: (details.guests || []).map(email => ({ email })),
     };
 
     try {
@@ -71,19 +71,39 @@ async function createCalendarEvent(auth, details) {
  */
 async function processMessage(message) {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash"});
+    
+    // "Memória" - Definimos la lista de contatos do seu núcleo
+    const contacts = {
+        "lucas": "lucas.siomi@polijunior.com.br",
+        "allan": "allan.doval@polijunior.com.br",
+        "gonça": "eduardo.goncalves@polijunior.com.br",
+        "gonca": "eduardo.goncalves@polijunior.com.br",
+        "enrico": "enrico.soares@polijunior.com.br",
+        "kelly": "kelly.flores@polijunior.com.br",
+        "lh": "luis.machado@polijunior.com.br",
+        "becker": "matheus.becker@polijunior.com.br",
+        "vini": "vinicius.lucio@polijunior.com.br",
+        "jaques": "carlos.jaques@polijunior.com.br",
+        "carol": "carolina.blazek@polijunior.com.br",
+        "pino": "joaogabriel.costa@polijunior.com.br",
+        "mineiro": "pedro.ferraz@polijunior.com.br",
+        "digão": "rodrigo.chojniak@polijunior.com.br"
+    };
+
     const today = new Date().toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
+    // Melhorar o Prompt com a lista de contatos
     const prompt = `
-        Sua tarefa é extrair dados de agendamento de uma mensagem para criar um evento. A data de hoje é ${today}.
+        Sua tarefa é extrair dados de agendamento de uma mensagem. A data de hoje é ${today}.
+
+        Você tem acesso à seguinte lista de contatos (nome/apelido: email):
+        ${JSON.stringify(contacts, null, 2)}
+
+        Se a mensagem do usuário mencionar um nome ou apelido da lista (ex: 'vini', 'gonça'), use o email correspondente da lista para o campo "guests". Se um email completo já for fornecido, use o email diretamente.
+
         Analise a mensagem do usuário e extraia: um título (title), a data no formato AAAA-MM-DD (date), a hora no formato HH:MM (time), uma duração em minutos (duration), e uma lista de e-mails de convidados (guests).
         A duração padrão, se não mencionada, é 60 minutos.
-        Responda APENAS com um objeto JSON válido. Se informações essenciais (título, data, hora) não forem encontradas, retorne um JSON com um campo "error".
-
-        Exemplo 1: "quero marcar a Apresentação do Projeto com fulano@ex.com para depois de amanhã às 4 da tarde por 30 min"
-        Resposta JSON 1: {"title":"Apresentação do Projeto","date":"2025-06-18","time":"16:00","duration":30,"guests":["fulano@ex.com"]}
-        
-        Exemplo 2: "e ai"
-        Resposta JSON 2: {"error":"Olá! Para agendar, preciso saber o título, a data e a hora da reunião."}
+        Responda APENAS com um objeto JSON válido. Se informações essenciais não forem encontradas, retorne um JSON com um campo "error".
 
         Mensagem do usuário: "${message}"
 
@@ -100,8 +120,8 @@ async function processMessage(message) {
             return details.error;
         }
 
-        if (!details.title || !details.date || !details.time) {
-            return "Não consegui entender todos os detalhes. Pode tentar de novo, especificando o título, data e hora?";
+        if (!details.title || !details.date || !details.time || !details.guests || details.guests.length === 0) {
+            return "Não consegui entender todos os detalhes. Preciso de um título, data, hora e pelo menos um convidado (seja o nome ou o email).";
         }
         
         const auth = await authorize();
@@ -113,5 +133,6 @@ async function processMessage(message) {
     }
 }
 
-// Exporta as funções necessárias
+
+// Exporta as funções necessárias para outros arquivos
 module.exports = { processMessage, authorize };
